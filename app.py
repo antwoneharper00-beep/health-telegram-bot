@@ -16,7 +16,7 @@ BOT_TOKEN = "8541344854:AAGCUrcEqL7W6XAs4QK3HVOXQNyg6QwK04E"
 WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzaHN8jubk2rnRyn_e1q5iD8scbuDMZDBlTYyCT2oAWY7asVxs5NBtSQX8zmQllH8LU/exec"
 WEBHOOK_TOKEN = "AH_HEALTH_2026_7f29xK81vitals"
 
-PUBLIC_URL = "https://health-telegram-bot-kqgk.onrender.com"
+PUBLIC_URL = "https://health-telegram-bot-kqqk.onrender.com"
 
 TELEGRAM_WEBHOOK_PATH="/telegram"
 TELEGRAM_WEBHOOK_URL=PUBLIC_URL+TELEGRAM_WEBHOOK_PATH

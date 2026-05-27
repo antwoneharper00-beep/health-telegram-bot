@@ -1,191 +1,443 @@
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
+import os
+import threading
 import requests
 import re
+import base64
+import asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
-BOT_TOKEN = "8541344854:AAEmaesou7KMJxkI9ddpaPQpSt-UCNW_ouw"
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
+from telegram import Update
+from flask import Flask, request
+
+BOT_TOKEN = "8541344854:AAGCUrcEqL7W6XAs4QK3HVOXQNyg6QwK04E"
 
 WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzaHN8jubk2rnRyn_e1q5iD8scbuDMZDBlTYyCT2oAWY7asVxs5NBtSQX8zmQllH8LU/exec"
 WEBHOOK_TOKEN = "AH_HEALTH_2026_7f29xK81vitals"
 
+PUBLIC_URL = "https://health-telegram-bot-kqgk.onrender.com"
+
+TELEGRAM_WEBHOOK_PATH="/telegram"
+TELEGRAM_WEBHOOK_URL=PUBLIC_URL+TELEGRAM_WEBHOOK_PATH
+
+LOCAL_TZ = ZoneInfo("America/New_York")
+
+telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+bot_loop = asyncio.new_event_loop()
+
+flask_app = Flask(__name__)
+
 
 def parse_time_from_message(lower):
-    now = datetime.now()
 
-    time_match = re.search(
+    now = datetime.now(LOCAL_TZ)
+
+    m = re.search(
+        r'(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})',
+        lower
+    )
+
+    if m:
+
+        month=int(m.group(1))
+        day=int(m.group(2))
+        year=int(m.group(3))
+
+        if year<100:
+            year +=2000
+
+        now=now.replace(
+            year=year,
+            month=month,
+            day=day
+        )
+
+    t=re.search(
         r'(?:@|at)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)',
         lower
     )
 
-    if not time_match:
+    if not t:
         return now
 
-    hour = int(time_match.group(1))
-    minute = int(time_match.group(2) or 0)
-    ampm = time_match.group(3).lower()
+    hour=int(t.group(1))
+    minute=int(t.group(2) or 0)
+    ampm=t.group(3)
 
-    if ampm == "pm" and hour != 12:
-        hour += 12
-    if ampm == "am" and hour == 12:
-        hour = 0
+    if ampm=="pm" and hour!=12:
+        hour +=12
 
-    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if ampm=="am" and hour==12:
+        hour=0
+
+    return now.replace(
+        hour=hour,
+        minute=minute,
+        second=0,
+        microsecond=0
+    )
 
 
 def send_to_health_log(payload):
+
     try:
-        response = requests.post(
+
+        r=requests.post(
             WEBHOOK_URL,
             json=payload,
-            timeout=20,
-            allow_redirects=False
+            allow_redirects=True,
+            timeout=90
         )
 
-        if response.status_code in [200, 302]:
-            return True, response.status_code, response.text
+        body=r.text.strip()
 
-        return False, response.status_code, response.text
+        print(
+            r.status_code,
+            body,
+            flush=True
+        )
+
+        if r.status_code in [200,302] and body.startswith("OK"):
+            return True,body
+
+        return False,body
 
     except Exception as e:
-        return False, "ERROR", str(e)
+
+        print(str(e),flush=True)
+
+        return False,str(e)
 
 
-def build_base_entry(name, value, unit, notes, captured_dt):
+def build_entry(name,value,unit,notes,captured):
+
     return {
-        "token": WEBHOOK_TOKEN,
-        "type": "Vitals",
-        "entry": {
-            "captured_at": captured_dt.astimezone().isoformat(),
-            "date": captured_dt.strftime("%Y-%m-%d"),
-            "time": captured_dt.strftime("%-I:%M %p"),
-            "name": name,
-            "value": value,
-            "unit": unit,
-            "notes": notes
+
+        "token":WEBHOOK_TOKEN,
+
+        "type":"Vitals",
+
+        "entry":{
+
+            "captured_at":captured.isoformat(),
+
+            "date":captured.strftime("%Y-%m-%d"),
+
+            "time":captured.strftime("%-I:%M %p"),
+
+            "name":name,
+
+            "value":value,
+
+            "unit":unit,
+
+            "notes":notes
+
         }
+
     }
 
 
-async def start(update, context):
+async def start(update,context):
+
+    print(
+        "START RECEIVED",
+        flush=True
+    )
+
     await update.message.reply_text(
-        "Health bot is online ✅\n\n"
-        "Try:\n"
-        "blood pressure 133/88 pulse 91\n"
-        "bp 133/88 pulse 91 @ 10:05am\n"
-        "blood sugar 111 mg @ 8:30am\n"
-        "sugar 111\n"
-        "urine 350 ml\n"
-        "weight 229.4"
+        "Health bot is online ✅"
     )
 
 
-async def handle_message(update, context):
-    text = update.message.text.strip()
-    lower = text.lower()
-    captured_dt = parse_time_from_message(lower)
+async def handle_message(update,context):
 
-    notes = "Logged from Telegram"
+    print(
+        "TEXT MESSAGE RECEIVED",
+        flush=True
+    )
 
-    if "after walking" in lower:
-        notes = "After walking"
-    elif "test" in lower:
-        notes = "Test entry from Telegram"
+    text=update.message.text.strip()
 
-    # BLOOD PRESSURE
-    bp_match = re.search(r'(\d{2,3})\/(\d{2,3})', text)
+    lower=text.lower()
 
-    if bp_match and ("blood pressure" in lower or "bp" in lower):
-        systolic = bp_match.group(1)
-        diastolic = bp_match.group(2)
+    captured=parse_time_from_message(lower)
 
-        pulse_match = re.search(r'(pulse|pul)\s*(\d{2,3})', lower)
-        pulse_text = f" Pulse {pulse_match.group(2)}" if pulse_match else ""
+    notes="Logged from Telegram"
 
-        value = f"{systolic}/{diastolic}{pulse_text}"
-        payload = build_base_entry("Blood Pressure", value, "mmHg", notes, captured_dt)
+    bp=re.search(
+        r'(\d{2,3})\/(\d{2,3})',
+        text
+    )
 
-        ok, code, body = send_to_health_log(payload)
+    if bp and ("bp" in lower or "blood pressure" in lower):
+
+        value=f"{bp.group(1)}/{bp.group(2)}"
+
+        ok,msg=send_to_health_log(
+
+            build_entry(
+                "Blood Pressure",
+                value,
+                "mmHg",
+                notes,
+                captured
+            )
+
+        )
 
         if ok:
+
             await update.message.reply_text(
-                f"✅ Logged BP: {value} at {captured_dt.strftime('%-I:%M %p')}"
+                f"✅ Logged BP {value}"
             )
+
         else:
-            await update.message.reply_text(f"⚠️ BP may not have logged. HTTP: {code}")
+
+            await update.message.reply_text(
+                msg
+            )
 
         return
 
-    # BLOOD SUGAR
-    sugar_match = re.search(r'(\d+)\s*(mg|mg\/dl)?', lower)
+    sugar=re.search(
+        r'(\d+)',
+        lower
+    )
 
-    if sugar_match and ("blood sugar" in lower or "sugar" in lower):
-        value = sugar_match.group(1)
-        payload = build_base_entry("Blood Sugar", value, "mg/dL", notes, captured_dt)
+    if sugar and ("sugar" in lower):
 
-        ok, code, body = send_to_health_log(payload)
+        value=sugar.group(1)
+
+        ok,msg=send_to_health_log(
+
+            build_entry(
+                "Blood Sugar",
+                value,
+                "mg/dL",
+                notes,
+                captured
+            )
+
+        )
 
         if ok:
+
             await update.message.reply_text(
-                f"✅ Logged Blood Sugar: {value} mg/dL at {captured_dt.strftime('%-I:%M %p')}"
+                f"✅ Logged Sugar {value}"
             )
+
         else:
-            await update.message.reply_text(f"⚠️ Blood sugar may not have logged. HTTP: {code}")
+
+            await update.message.reply_text(
+                msg
+            )
 
         return
 
-    # URINE OUTPUT
-    urine_match = re.search(r'(\d+)\s*(ml|mL)', text)
+    urine=re.search(
+        r'(\d+)\s*(ml|mL)',
+        text
+    )
 
-    if urine_match and "urine" in lower:
-        value = urine_match.group(1)
-        payload = build_base_entry("Urine Output", value, "mL", notes, captured_dt)
+    if urine and "urine" in lower:
 
-        ok, code, body = send_to_health_log(payload)
+        value=urine.group(1)
+
+        ok,msg=send_to_health_log(
+
+            build_entry(
+                "Urine Output",
+                value,
+                "mL",
+                notes,
+                captured
+            )
+
+        )
 
         if ok:
+
             await update.message.reply_text(
-                f"✅ Logged Urine Output: {value} mL at {captured_dt.strftime('%-I:%M %p')}"
+                f"✅ Logged Urine {value}mL"
             )
+
         else:
-            await update.message.reply_text(f"⚠️ Urine output may not have logged. HTTP: {code}")
+
+            await update.message.reply_text(
+                msg
+            )
 
         return
 
-    # WEIGHT
-    weight_match = re.search(r'(\d{2,3}(?:\.\d+)?)', lower)
+    weight=re.search(
+        r'(\d{2,3}(?:\.\d+)?)',
+        lower
+    )
 
-    if weight_match and ("weight" in lower or "weigh" in lower):
-        value = weight_match.group(1)
-        payload = build_base_entry("Weight", value, "lbs", notes, captured_dt)
+    if weight and "weight" in lower:
 
-        ok, code, body = send_to_health_log(payload)
+        value=weight.group(1)
+
+        ok,msg=send_to_health_log(
+
+            build_entry(
+                "Weight",
+                value,
+                "lbs",
+                notes,
+                captured
+            )
+
+        )
 
         if ok:
+
             await update.message.reply_text(
-                f"✅ Logged Weight: {value} lbs at {captured_dt.strftime('%-I:%M %p')}"
+                f"✅ Logged Weight {value}"
             )
+
         else:
-            await update.message.reply_text(f"⚠️ Weight may not have logged. HTTP: {code}")
+
+            await update.message.reply_text(
+                msg
+            )
 
         return
 
     await update.message.reply_text(
-        "I couldn't understand that entry yet.\n\n"
-        "Try:\n"
-        "blood pressure 133/88 pulse 91\n"
-        "bp 133/88 pulse 91 @ 10:05am\n"
-        "blood sugar 111 mg @ 8:30am\n"
-        "sugar 111\n"
-        "urine 350 ml\n"
-        "weight 229.4"
+        "I couldn't understand that entry."
     )
 
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+telegram_app.add_handler(
+    CommandHandler(
+        "start",
+        start
+    )
+)
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+telegram_app.add_handler(
 
-print("Health Telegram bot running...")
+    MessageHandler(
 
-app.run_polling()
+        filters.TEXT & ~filters.COMMAND,
+
+        handle_message
+
+    )
+
+)
+
+
+def run_bot():
+
+    asyncio.set_event_loop(
+        bot_loop
+    )
+
+    async def startup():
+
+        await telegram_app.initialize()
+
+        await telegram_app.start()
+
+        await telegram_app.bot.delete_webhook(
+            drop_pending_updates=True
+        )
+
+        await telegram_app.bot.set_webhook(
+            url=TELEGRAM_WEBHOOK_URL,
+            drop_pending_updates=True
+        )
+
+        info=await telegram_app.bot.get_webhook_info()
+
+        print(
+            info,
+            flush=True
+        )
+
+    bot_loop.run_until_complete(
+        startup()
+    )
+
+    bot_loop.run_forever()
+
+
+threading.Thread(
+    target=run_bot,
+    daemon=True
+).start()
+
+
+@flask_app.route("/")
+def home():
+
+    return "Health Bot Running"
+
+
+@flask_app.route("/ping")
+def ping():
+
+    return "pong"
+
+
+@flask_app.route("/telegram",methods=["POST"])
+def telegram():
+
+    try:
+
+        print(
+            "WEBHOOK HIT",
+            flush=True
+        )
+
+        data=request.get_json(
+            force=True
+        )
+
+        update=Update.de_json(
+            data,
+            telegram_app.bot
+        )
+
+        future=asyncio.run_coroutine_threadsafe(
+            telegram_app.process_update(
+                update
+            ),
+            bot_loop
+        )
+
+        future.result(
+            timeout=60
+        )
+
+        return "OK",200
+
+    except Exception as e:
+
+        print(
+            str(e),
+            flush=True
+        )
+
+        return "ERROR",500
+
+
+if __name__=="__main__":
+
+    flask_app.run(
+
+        host="0.0.0.0",
+
+        port=int(
+            os.environ.get(
+                "PORT",
+                10000
+            )
+        )
+
+    )

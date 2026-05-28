@@ -307,6 +307,34 @@ async def handle_message(update,context):
 
         return
 
+    if lower in ["bm", "bowel movement", "poop"] or lower.startswith("bm ") or lower.startswith("bowel movement"):
+
+        note_text = text
+
+        payload = build_entry(
+            "Bowel Movement",
+            "1",
+            "count",
+            note_text,
+            captured
+        )
+
+        ok,msg=send_to_health_log(payload)
+
+        if ok:
+
+            await update.message.reply_text(
+                "✅ Logged Bowel Movement"
+            )
+
+        else:
+
+            await update.message.reply_text(
+                msg
+            )
+
+        return
+
     await update.message.reply_text(
         "I couldn't understand that entry."
     )

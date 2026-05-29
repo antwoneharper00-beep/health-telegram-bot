@@ -1,83 +1,61 @@
-import os
-import threading
-import requests
-import re
-import asyncio
+import os, re, asyncio, threading, requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
-from telegram import Update
 from flask import Flask, request
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
 
-BOT_TOKEN = "8541344854:AAGCUrcEqL7W6XAs4QK3HVOXQNyg6QwK04E"
-
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbzaHN8jubk2rnRyn_e1q5iD8scbuDMZDBlTYyCT2oAWY7asVxs5NBtSQX8zmQllH8LU/exec"
-WEBHOOK_TOKEN = "AH_HEALTH_2026_7f29xK81vitals"
-
-PUBLIC_URL = "https://health-telegram-bot-kqqk.onrender.com"
-
-TELEGRAM_WEBHOOK_PATH = "/telegram"
-TELEGRAM_WEBHOOK_URL = PUBLIC_URL + TELEGRAM_WEBHOOK_PATH
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "PASTE_BOT_TOKEN_HERE")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "PASTE_APPS_SCRIPT_WEBHOOK_URL_HERE")
+WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "AH_HEALTH_2026_7f29xK81vitals")
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://health-telegram-bot-kqqk.onrender.com")
 
 LOCAL_TZ = ZoneInfo("America/New_York")
+TELEGRAM_WEBHOOK_PATH = "/telegram"
+TELEGRAM_WEBHOOK_URL = PUBLIC_URL + TELEGRAM_WEBHOOK_PATH
 
 telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 bot_loop = asyncio.new_event_loop()
 flask_app = Flask(__name__)
 
 
-def parse_time_from_message(lower):
+def parse_time_from_message(text):
+    lower = text.lower()
     now = datetime.now(LOCAL_TZ)
 
     m = re.search(r'(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})', lower)
     if m:
-        month = int(m.group(1))
-        day = int(m.group(2))
-        year = int(m.group(3))
+        month, day, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
         if year < 100:
             year += 2000
         now = now.replace(year=year, month=month, day=day)
 
     t = re.search(r'(?:@|at)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)', lower)
-    if not t:
-        return now
+    if t:
+        hour = int(t.group(1))
+        minute = int(t.group(2) or 0)
+        ampm = t.group(3)
+        if ampm == "pm" and hour != 12:
+            hour += 12
+        if ampm == "am" and hour == 12:
+            hour = 0
+        now = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-    hour = int(t.group(1))
-    minute = int(t.group(2) or 0)
-    ampm = t.group(3)
-
-    if ampm == "pm" and hour != 12:
-        hour += 12
-    if ampm == "am" and hour == 12:
-        hour = 0
-
-    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return now
 
 
 def send_to_health_log(payload):
     try:
-        r = requests.post(
-            WEBHOOK_URL,
-            json=payload,
-            allow_redirects=True,
-            timeout=90
-        )
-
+        r = requests.post(WEBHOOK_URL, json=payload, allow_redirects=True, timeout=90)
         body = r.text.strip()
         print(r.status_code, body, flush=True)
-
-        if r.status_code in [200, 302] and body.startswith("OK"):
-            return True, body
-
-        return False, body
-
+        return r.status_code in [200, 302] and body.startswith("OK"), body
     except Exception as e:
         print(str(e), flush=True)
         return False, str(e)
 
 
-def build_entry(name, value, unit, notes, captured):
+def build_vital(name, value, unit, notes, captured):
     return {
         "token": WEBHOOK_TOKEN,
         "type": "Vitals",
@@ -93,7 +71,9 @@ def build_entry(name, value, unit, notes, captured):
     }
 
 
-def build_wound_entry(notes, captured):
+def build_wound(notes, captured, photo_url="", photo_file_id=""):
+    lower = notes.lower()
+
     return {
         "token": WEBHOOK_TOKEN,
         "type": "Wound",
@@ -104,113 +84,96 @@ def build_wound_entry(notes, captured):
             "name": "Driveline Site",
             "value": "",
             "unit": "",
-            "notes": notes
+            "notes": notes,
+            "photo_url": photo_url,
+            "photo_file_id": photo_file_id,
+            "drainage": "Some" if "drainage" in lower else "",
+            "odor": "No" if "no odor" in lower else "",
+            "redness": "No" if "no redness" in lower else "",
+            "swelling": "No" if "no swelling" in lower else "",
+            "pain": "",
+            "status": ""
         }
     }
 
 
 async def start(update, context):
-    print("START RECEIVED", flush=True)
     await update.message.reply_text("Health bot is online ✅")
 
 
-async def handle_message(update, context):
-    print("TEXT MESSAGE RECEIVED", flush=True)
-
+async def handle_text(update, context):
     text = update.message.text.strip()
     lower = text.lower()
-    captured = parse_time_from_message(lower)
+    captured = parse_time_from_message(text)
     notes = "Logged from Telegram"
 
-    # Blood Pressure
     bp = re.search(r'(\d{2,3})\/(\d{2,3})', text)
     if bp and ("bp" in lower or "blood pressure" in lower):
         value = f"{bp.group(1)}/{bp.group(2)}"
-        ok, msg = send_to_health_log(
-            build_entry("Blood Pressure", value, "mmHg", notes, captured)
-        )
-
-        if ok:
-            await update.message.reply_text(f"✅ Logged BP {value}")
-        else:
-            await update.message.reply_text(msg)
+        ok, msg = send_to_health_log(build_vital("Blood Pressure", value, "mmHg", notes, captured))
+        await update.message.reply_text(f"✅ Logged BP {value}" if ok else msg)
         return
 
-    # Blood Sugar
-    sugar = re.search(r'(\d+)', lower)
-    if sugar and ("sugar" in lower or "blood sugar" in lower):
-        value = sugar.group(1)
-        ok, msg = send_to_health_log(
-            build_entry("Blood Sugar", value, "mg/dL", notes, captured)
-        )
+    if "sugar" in lower or "blood sugar" in lower:
+        m = re.search(r'(\d+)', lower)
+        if m:
+            value = m.group(1)
+            ok, msg = send_to_health_log(build_vital("Blood Sugar", value, "mg/dL", notes, captured))
+            await update.message.reply_text(f"✅ Logged Sugar {value}" if ok else msg)
+            return
 
-        if ok:
-            await update.message.reply_text(f"✅ Logged Sugar {value}")
-        else:
-            await update.message.reply_text(msg)
+    if "urine" in lower:
+        m = re.search(r'(\d+)\s*(ml|mL)', text)
+        if m:
+            value = m.group(1)
+            ok, msg = send_to_health_log(build_vital("Urine Output", value, "mL", notes, captured))
+            await update.message.reply_text(f"✅ Logged Urine {value}mL" if ok else msg)
+            return
+
+    if "weight" in lower:
+        m = re.search(r'(\d{2,3}(?:\.\d+)?)', lower)
+        if m:
+            value = m.group(1)
+            ok, msg = send_to_health_log(build_vital("Weight", value, "lbs", notes, captured))
+            await update.message.reply_text(f"✅ Logged Weight {value}" if ok else msg)
+            return
+
+    if lower in ["bm", "bowel movement", "poop"] or lower.startswith("bm ") or lower.startswith("bowel movement"):
+        ok, msg = send_to_health_log(build_vital("Bowel Movement", "1", "count", text, captured))
+        await update.message.reply_text("✅ Logged Bowel Movement" if ok else msg)
         return
 
-    # Urine Output
-    urine = re.search(r'(\d+)\s*(ml|mL)', text)
-    if urine and "urine" in lower:
-        value = urine.group(1)
-        ok, msg = send_to_health_log(
-            build_entry("Urine Output", value, "mL", notes, captured)
-        )
-
-        if ok:
-            await update.message.reply_text(f"✅ Logged Urine {value}mL")
-        else:
-            await update.message.reply_text(msg)
-        return
-
-    # Weight
-    weight = re.search(r'(\d{2,3}(?:\.\d+)?)', lower)
-    if weight and "weight" in lower:
-        value = weight.group(1)
-        ok, msg = send_to_health_log(
-            build_entry("Weight", value, "lbs", notes, captured)
-        )
-
-        if ok:
-            await update.message.reply_text(f"✅ Logged Weight {value}")
-        else:
-            await update.message.reply_text(msg)
-        return
-
-    # Bowel Movement
-    if (
-        lower in ["bm", "bowel movement", "poop"]
-        or lower.startswith("bm ")
-        or lower.startswith("bowel movement")
-    ):
-        ok, msg = send_to_health_log(
-            build_entry("Bowel Movement", "1", "count", text, captured)
-        )
-
-        if ok:
-            await update.message.reply_text("✅ Logged Bowel Movement")
-        else:
-            await update.message.reply_text(msg)
-        return
-
-    # Wound Timeline
     if lower.startswith("wound") or " wound " in lower:
-        ok, msg = send_to_health_log(
-            build_wound_entry(text, captured)
-        )
-
-        if ok:
-            await update.message.reply_text("✅ Logged Wound Entry")
-        else:
-            await update.message.reply_text(msg)
+        ok, msg = send_to_health_log(build_wound(text, captured))
+        await update.message.reply_text("✅ Logged Wound Entry" if ok else msg)
         return
 
     await update.message.reply_text("I couldn't understand that entry.")
 
 
+async def handle_photo(update, context):
+    caption = update.message.caption or ""
+    lower = caption.lower()
+
+    if not caption or not lower.startswith("wound"):
+        await update.message.reply_text("Photo received, but add a wound caption starting with: Wound")
+        return
+
+    captured = parse_time_from_message(caption)
+
+    photo = update.message.photo[-1]
+    file_id = photo.file_id
+
+    tg_file = await context.bot.get_file(file_id)
+    photo_url = tg_file.file_path
+
+    ok, msg = send_to_health_log(build_wound(caption, captured, photo_url, file_id))
+    await update.message.reply_text("✅ Logged Wound Photo Entry" if ok else msg)
+
+
 telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+telegram_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
 
 def run_bot():
@@ -219,13 +182,8 @@ def run_bot():
     async def startup():
         await telegram_app.initialize()
         await telegram_app.start()
-
         await telegram_app.bot.delete_webhook(drop_pending_updates=True)
-        await telegram_app.bot.set_webhook(
-            url=TELEGRAM_WEBHOOK_URL,
-            drop_pending_updates=True
-        )
-
+        await telegram_app.bot.set_webhook(url=TELEGRAM_WEBHOOK_URL, drop_pending_updates=True)
         info = await telegram_app.bot.get_webhook_info()
         print(info, flush=True)
 
@@ -249,27 +207,15 @@ def ping():
 @flask_app.route("/telegram", methods=["POST"])
 def telegram():
     try:
-        print("WEBHOOK HIT", flush=True)
-
         data = request.get_json(force=True)
         update = Update.de_json(data, telegram_app.bot)
-
-        future = asyncio.run_coroutine_threadsafe(
-            telegram_app.process_update(update),
-            bot_loop
-        )
-
+        future = asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), bot_loop)
         future.result(timeout=60)
-
         return "OK", 200
-
     except Exception as e:
         print(str(e), flush=True)
         return "ERROR", 500
 
 
 if __name__ == "__main__":
-    flask_app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000))
-    )
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))

@@ -161,7 +161,7 @@ async def handle_text(update, context):
 
 
 async def handle_photo(update, context):
-        caption = update.message.caption or ""
+    caption = update.message.caption or ""
     lower = caption.lower()
 
     if not caption or not lower.startswith("wound"):
@@ -177,7 +177,6 @@ async def handle_photo(update, context):
 
     tg_file = await context.bot.get_file(file_id)
     photo_bytes = await tg_file.download_as_bytearray()
-
     photo_base64 = base64.b64encode(photo_bytes).decode("utf-8")
 
     ok, msg = send_to_health_log(

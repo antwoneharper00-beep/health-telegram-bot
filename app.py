@@ -161,6 +161,38 @@ async def handle_text(update, context):
 
 
 async def handle_photo(update, context):
+        caption = update.message.caption or ""
+    lower = caption.lower()
+
+    if not caption or not lower.startswith("wound"):
+        await update.message.reply_text(
+            "Photo received, but add a wound caption starting with: Wound"
+        )
+        return
+
+    captured = parse_time_from_message(caption)
+
+    photo = update.message.photo[-1]
+    file_id = photo.file_id
+
+    tg_file = await context.bot.get_file(file_id)
+    photo_bytes = await tg_file.download_as_bytearray()
+
+    photo_base64 = base64.b64encode(photo_bytes).decode("utf-8")
+
+    ok, msg = send_to_health_log(
+        build_wound(
+            caption,
+            captured,
+            "",
+            file_id,
+            photo_base64
+        )
+    )
+
+    await update.message.reply_text(
+        "✅ Logged Wound Photo Entry" if ok else msg
+    )
 
 
 telegram_app.add_handler(CommandHandler("start", start))

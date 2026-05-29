@@ -79,7 +79,7 @@ def build_vital(name, value, unit, notes, captured):
     }
 
 
-def build_wound(notes, captured, photo_url="", photo_file_id=""):
+def build_wound(notes, captured, photo_url="", photo_file_id="", photo_base64=""):
     lower = notes.lower()
 
     return {
@@ -95,6 +95,7 @@ def build_wound(notes, captured, photo_url="", photo_file_id=""):
             "notes": notes,
             "photo_url": photo_url,
             "photo_file_id": photo_file_id,
+            "photo_base64": photo_base64,
             "drainage": "Some" if "drainage" in lower else "",
             "odor": "No" if "no odor" in lower else "",
             "redness": "No" if "no redness" in lower else "",
@@ -160,23 +161,6 @@ async def handle_text(update, context):
 
 
 async def handle_photo(update, context):
-    caption = update.message.caption or ""
-    lower = caption.lower()
-
-    if not caption or not lower.startswith("wound"):
-        await update.message.reply_text("Photo received, but add a wound caption starting with: Wound")
-        return
-
-    captured = parse_time_from_message(caption)
-
-    photo = update.message.photo[-1]
-    file_id = photo.file_id
-
-    tg_file = await context.bot.get_file(file_id)
-    photo_url = tg_file.file_path
-
-    ok, msg = send_to_health_log(build_wound(caption, captured, photo_url, file_id))
-    await update.message.reply_text("✅ Logged Wound Photo Entry" if ok else msg)
 
 
 telegram_app.add_handler(CommandHandler("start", start))

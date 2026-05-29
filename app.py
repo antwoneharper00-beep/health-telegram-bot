@@ -2,7 +2,6 @@ import os
 import threading
 import requests
 import re
-import base64
 import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -18,454 +17,259 @@ WEBHOOK_TOKEN = "AH_HEALTH_2026_7f29xK81vitals"
 
 PUBLIC_URL = "https://health-telegram-bot-kqqk.onrender.com"
 
-TELEGRAM_WEBHOOK_PATH="/telegram"
-TELEGRAM_WEBHOOK_URL=PUBLIC_URL+TELEGRAM_WEBHOOK_PATH
+TELEGRAM_WEBHOOK_PATH = "/telegram"
+TELEGRAM_WEBHOOK_URL = PUBLIC_URL + TELEGRAM_WEBHOOK_PATH
 
 LOCAL_TZ = ZoneInfo("America/New_York")
 
 telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
-
 bot_loop = asyncio.new_event_loop()
-
 flask_app = Flask(__name__)
 
 
 def parse_time_from_message(lower):
-
     now = datetime.now(LOCAL_TZ)
 
-    m = re.search(
-        r'(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})',
-        lower
-    )
-
+    m = re.search(r'(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})', lower)
     if m:
+        month = int(m.group(1))
+        day = int(m.group(2))
+        year = int(m.group(3))
+        if year < 100:
+            year += 2000
+        now = now.replace(year=year, month=month, day=day)
 
-        month=int(m.group(1))
-        day=int(m.group(2))
-        year=int(m.group(3))
-
-        if year<100:
-            year +=2000
-
-        now=now.replace(
-            year=year,
-            month=month,
-            day=day
-        )
-
-    t=re.search(
-        r'(?:@|at)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)',
-        lower
-    )
-
+    t = re.search(r'(?:@|at)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)', lower)
     if not t:
         return now
 
-    hour=int(t.group(1))
-    minute=int(t.group(2) or 0)
-    ampm=t.group(3)
+    hour = int(t.group(1))
+    minute = int(t.group(2) or 0)
+    ampm = t.group(3)
 
-    if ampm=="pm" and hour!=12:
-        hour +=12
+    if ampm == "pm" and hour != 12:
+        hour += 12
+    if ampm == "am" and hour == 12:
+        hour = 0
 
-    if ampm=="am" and hour==12:
-        hour=0
-
-    return now.replace(
-        hour=hour,
-        minute=minute,
-        second=0,
-        microsecond=0
-    )
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
 def send_to_health_log(payload):
-
     try:
-
-        r=requests.post(
+        r = requests.post(
             WEBHOOK_URL,
             json=payload,
             allow_redirects=True,
             timeout=90
         )
 
-        body=r.text.strip()
+        body = r.text.strip()
+        print(r.status_code, body, flush=True)
 
-        print(
-            r.status_code,
-            body,
-            flush=True
-        )
+        if r.status_code in [200, 302] and body.startswith("OK"):
+            return True, body
 
-        if r.status_code in [200,302] and body.startswith("OK"):
-            return True,body
-
-        return False,body
+        return False, body
 
     except Exception as e:
-
-        print(str(e),flush=True)
-
-        return False,str(e)
+        print(str(e), flush=True)
+        return False, str(e)
 
 
-def build_entry(name,value,unit,notes,captured):
-
+def build_entry(name, value, unit, notes, captured):
     return {
-
-        "token":WEBHOOK_TOKEN,
-
-        "type":"Vitals",
-
-        "entry":{
-
-            "captured_at":captured.isoformat(),
-
-            "date":captured.strftime("%Y-%m-%d"),
-
-            "time":captured.strftime("%-I:%M %p"),
-
-            "name":name,
-
-            "value":value,
-
-            "unit":unit,
-
-            "notes":notes
-
+        "token": WEBHOOK_TOKEN,
+        "type": "Vitals",
+        "entry": {
+            "captured_at": captured.isoformat(),
+            "date": captured.strftime("%Y-%m-%d"),
+            "time": captured.strftime("%-I:%M %p"),
+            "name": name,
+            "value": value,
+            "unit": unit,
+            "notes": notes
         }
-
     }
 
 
-async def start(update,context):
+def build_wound_entry(notes, captured):
+    return {
+        "token": WEBHOOK_TOKEN,
+        "type": "Wound",
+        "entry": {
+            "captured_at": captured.isoformat(),
+            "date": captured.strftime("%Y-%m-%d"),
+            "time": captured.strftime("%-I:%M %p"),
+            "name": "Driveline Site",
+            "value": "",
+            "unit": "",
+            "notes": notes
+        }
+    }
 
-    print(
-        "START RECEIVED",
-        flush=True
-    )
 
-    await update.message.reply_text(
-        "Health bot is online ✅"
-    )
+async def start(update, context):
+    print("START RECEIVED", flush=True)
+    await update.message.reply_text("Health bot is online ✅")
 
 
-async def handle_message(update,context):
+async def handle_message(update, context):
+    print("TEXT MESSAGE RECEIVED", flush=True)
 
-    print(
-        "TEXT MESSAGE RECEIVED",
-        flush=True
-    )
+    text = update.message.text.strip()
+    lower = text.lower()
+    captured = parse_time_from_message(lower)
+    notes = "Logged from Telegram"
 
-    text=update.message.text.strip()
-
-    lower=text.lower()
-
-    captured=parse_time_from_message(lower)
-
-    notes="Logged from Telegram"
-
-    bp=re.search(
-        r'(\d{2,3})\/(\d{2,3})',
-        text
-    )
-
+    # Blood Pressure
+    bp = re.search(r'(\d{2,3})\/(\d{2,3})', text)
     if bp and ("bp" in lower or "blood pressure" in lower):
-
-        value=f"{bp.group(1)}/{bp.group(2)}"
-
-        ok,msg=send_to_health_log(
-
-            build_entry(
-                "Blood Pressure",
-                value,
-                "mmHg",
-                notes,
-                captured
-            )
-
+        value = f"{bp.group(1)}/{bp.group(2)}"
+        ok, msg = send_to_health_log(
+            build_entry("Blood Pressure", value, "mmHg", notes, captured)
         )
 
         if ok:
-
-            await update.message.reply_text(
-                f"✅ Logged BP {value}"
-            )
-
+            await update.message.reply_text(f"✅ Logged BP {value}")
         else:
-
-            await update.message.reply_text(
-                msg
-            )
-
+            await update.message.reply_text(msg)
         return
 
-    sugar=re.search(
-        r'(\d+)',
-        lower
-    )
-
-    if sugar and ("sugar" in lower):
-
-        value=sugar.group(1)
-
-        ok,msg=send_to_health_log(
-
-            build_entry(
-                "Blood Sugar",
-                value,
-                "mg/dL",
-                notes,
-                captured
-            )
-
+    # Blood Sugar
+    sugar = re.search(r'(\d+)', lower)
+    if sugar and ("sugar" in lower or "blood sugar" in lower):
+        value = sugar.group(1)
+        ok, msg = send_to_health_log(
+            build_entry("Blood Sugar", value, "mg/dL", notes, captured)
         )
 
         if ok:
-
-            await update.message.reply_text(
-                f"✅ Logged Sugar {value}"
-            )
-
+            await update.message.reply_text(f"✅ Logged Sugar {value}")
         else:
-
-            await update.message.reply_text(
-                msg
-            )
-
+            await update.message.reply_text(msg)
         return
 
-    urine=re.search(
-        r'(\d+)\s*(ml|mL)',
-        text
-    )
-
+    # Urine Output
+    urine = re.search(r'(\d+)\s*(ml|mL)', text)
     if urine and "urine" in lower:
-
-        value=urine.group(1)
-
-        ok,msg=send_to_health_log(
-
-            build_entry(
-                "Urine Output",
-                value,
-                "mL",
-                notes,
-                captured
-            )
-
+        value = urine.group(1)
+        ok, msg = send_to_health_log(
+            build_entry("Urine Output", value, "mL", notes, captured)
         )
 
         if ok:
-
-            await update.message.reply_text(
-                f"✅ Logged Urine {value}mL"
-            )
-
+            await update.message.reply_text(f"✅ Logged Urine {value}mL")
         else:
-
-            await update.message.reply_text(
-                msg
-            )
-
+            await update.message.reply_text(msg)
         return
 
-    weight=re.search(
-        r'(\d{2,3}(?:\.\d+)?)',
-        lower
-    )
-
+    # Weight
+    weight = re.search(r'(\d{2,3}(?:\.\d+)?)', lower)
     if weight and "weight" in lower:
-
-        value=weight.group(1)
-
-        ok,msg=send_to_health_log(
-
-            build_entry(
-                "Weight",
-                value,
-                "lbs",
-                notes,
-                captured
-            )
-
+        value = weight.group(1)
+        ok, msg = send_to_health_log(
+            build_entry("Weight", value, "lbs", notes, captured)
         )
 
         if ok:
-
-            await update.message.reply_text(
-                f"✅ Logged Weight {value}"
-            )
-
+            await update.message.reply_text(f"✅ Logged Weight {value}")
         else:
-
-            await update.message.reply_text(
-                msg
-            )
-
+            await update.message.reply_text(msg)
         return
 
-    if lower in ["bm", "bowel movement", "poop"] or lower.startswith("bm ") or lower.startswith("bowel movement"):
-
-        note_text = text
-
-        payload = build_entry(
-            "Bowel Movement",
-            "1",
-            "count",
-            note_text,
-            captured
+    # Bowel Movement
+    if (
+        lower in ["bm", "bowel movement", "poop"]
+        or lower.startswith("bm ")
+        or lower.startswith("bowel movement")
+    ):
+        ok, msg = send_to_health_log(
+            build_entry("Bowel Movement", "1", "count", text, captured)
         )
 
-        ok,msg=send_to_health_log(payload)
-
         if ok:
-
-            await update.message.reply_text(
-                "✅ Logged Bowel Movement"
-            )
-
+            await update.message.reply_text("✅ Logged Bowel Movement")
         else:
-
-            await update.message.reply_text(
-                msg
-            )
-
+            await update.message.reply_text(msg)
         return
 
-    await update.message.reply_text(
-        "I couldn't understand that entry."
-    )
+    # Wound Timeline
+    if lower.startswith("wound") or " wound " in lower:
+        ok, msg = send_to_health_log(
+            build_wound_entry(text, captured)
+        )
+
+        if ok:
+            await update.message.reply_text("✅ Logged Wound Entry")
+        else:
+            await update.message.reply_text(msg)
+        return
+
+    await update.message.reply_text("I couldn't understand that entry.")
 
 
-telegram_app.add_handler(
-    CommandHandler(
-        "start",
-        start
-    )
-)
-
-telegram_app.add_handler(
-
-    MessageHandler(
-
-        filters.TEXT & ~filters.COMMAND,
-
-        handle_message
-
-    )
-
-)
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 
 def run_bot():
-
-    asyncio.set_event_loop(
-        bot_loop
-    )
+    asyncio.set_event_loop(bot_loop)
 
     async def startup():
-
         await telegram_app.initialize()
-
         await telegram_app.start()
 
-        await telegram_app.bot.delete_webhook(
-            drop_pending_updates=True
-        )
-
+        await telegram_app.bot.delete_webhook(drop_pending_updates=True)
         await telegram_app.bot.set_webhook(
             url=TELEGRAM_WEBHOOK_URL,
             drop_pending_updates=True
         )
 
-        info=await telegram_app.bot.get_webhook_info()
+        info = await telegram_app.bot.get_webhook_info()
+        print(info, flush=True)
 
-        print(
-            info,
-            flush=True
-        )
-
-    bot_loop.run_until_complete(
-        startup()
-    )
-
+    bot_loop.run_until_complete(startup())
     bot_loop.run_forever()
 
 
-threading.Thread(
-    target=run_bot,
-    daemon=True
-).start()
+threading.Thread(target=run_bot, daemon=True).start()
 
 
 @flask_app.route("/")
 def home():
-
     return "Health Bot Running"
 
 
 @flask_app.route("/ping")
 def ping():
-
     return "pong"
 
 
-@flask_app.route("/telegram",methods=["POST"])
+@flask_app.route("/telegram", methods=["POST"])
 def telegram():
-
     try:
+        print("WEBHOOK HIT", flush=True)
 
-        print(
-            "WEBHOOK HIT",
-            flush=True
-        )
+        data = request.get_json(force=True)
+        update = Update.de_json(data, telegram_app.bot)
 
-        data=request.get_json(
-            force=True
-        )
-
-        update=Update.de_json(
-            data,
-            telegram_app.bot
-        )
-
-        future=asyncio.run_coroutine_threadsafe(
-            telegram_app.process_update(
-                update
-            ),
+        future = asyncio.run_coroutine_threadsafe(
+            telegram_app.process_update(update),
             bot_loop
         )
 
-        future.result(
-            timeout=60
-        )
+        future.result(timeout=60)
 
-        return "OK",200
+        return "OK", 200
 
     except Exception as e:
-
-        print(
-            str(e),
-            flush=True
-        )
-
-        return "ERROR",500
+        print(str(e), flush=True)
+        return "ERROR", 500
 
 
-if __name__=="__main__":
-
+if __name__ == "__main__":
     flask_app.run(
-
         host="0.0.0.0",
-
-        port=int(
-            os.environ.get(
-                "PORT",
-                10000
-            )
-        )
-
+        port=int(os.environ.get("PORT", 10000))
     )

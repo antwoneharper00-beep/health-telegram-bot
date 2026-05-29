@@ -5,8 +5,8 @@ from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "PASTE_BOT_TOKEN_HERE")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "PASTE_APPS_SCRIPT_WEBHOOK_URL_HERE")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8541344854:AAGCUrcEqL7W6XAs4QK3HVOXQNyg6QwK04E")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://script.google.com/macros/s/AKfycbzaHN8jubk2rnRyn_e1q5iD8scbuDMZDBlTYyCT2oAWY7asVxs5NBtSQX8zmQllH8LU/exec")
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "AH_HEALTH_2026_7f29xK81vitals")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://health-telegram-bot-kqqk.onrender.com")
 

@@ -148,7 +148,28 @@ async def handle_text(update, context):
     lower = text.lower()
     captured = parse_time_from_message(text)
     notes = "Logged from Telegram"
+    # ---------- Claim Creation ----------
+m = re.match(r"claim\s+(TR-\d+)", text, re.IGNORECASE)
+if m:
+    trip_id = m.group(1).upper()
 
+    try:
+        r = requests.post(
+            WEBHOOK_URL,
+            json={
+                "token": WEBHOOK_TOKEN,
+                "action": "createMileageClaim",
+                "tripId": trip_id
+            },
+            timeout=90
+        )
+
+        await update.message.reply_text(r.text)
+
+    except Exception as e:
+        await update.message.reply_text(str(e))
+
+    return
     bp = re.search(r"(\d{2,3})\/(\d{2,3})", text)
     if bp and ("bp" in lower or "blood pressure" in lower):
         value = f"{bp.group(1)}/{bp.group(2)}"

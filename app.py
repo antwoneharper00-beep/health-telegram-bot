@@ -80,7 +80,6 @@ def build_vital(name, value, unit, notes, captured):
 
 def build_wound(notes, captured, photo_url="", photo_file_id="", photo_base64=""):
     lower = notes.lower()
-
     return {
         "token": WEBHOOK_TOKEN,
         "type": "Wound",
@@ -112,9 +111,10 @@ async def start(update, context):
 async def reimburse(update, context):
     await update.message.reply_text(
         "Reimbursement commands:\n\n"
-        "/newclaim TR-0006\n"
-        "/receipt TR-0006 gas 42.18 Sheetz\n\n"
-        "For receipts, send a photo with the /receipt caption."
+        "claim TR-0006\n"
+        "/newclaim TR-0006\n\n"
+        "Receipt photo caption:\n"
+        "/receipt TR-0006 gas 42.18 Sheetz"
     )
 
 
@@ -148,28 +148,22 @@ async def handle_text(update, context):
     lower = text.lower()
     captured = parse_time_from_message(text)
     notes = "Logged from Telegram"
-    # ---------- Claim Creation ----------
-m = re.match(r"claim\s+(TR-\d+)", text, re.IGNORECASE)
-if m:
-    trip_id = m.group(1).upper()
 
-    try:
-        r = requests.post(
-            WEBHOOK_URL,
-            json={
-                "token": WEBHOOK_TOKEN,
-                "action": "createMileageClaim",
-                "tripId": trip_id
-            },
-            timeout=90
-        )
+    claim_match = re.match(r"claim\s+(TR-\d+)", text, re.IGNORECASE)
+    if claim_match:
+        trip_id = claim_match.group(1).upper()
 
-        await update.message.reply_text(r.text)
+        payload = {
+            "token": WEBHOOK_TOKEN,
+            "type": "ReimbursementAction",
+            "action": "create_claim",
+            "payload": {"tripId": trip_id},
+        }
 
-    except Exception as e:
-        await update.message.reply_text(str(e))
+        ok, msg = send_to_health_log(payload)
+        await update.message.reply_text(msg if ok else f"Error: {msg}")
+        return
 
-    return
     bp = re.search(r"(\d{2,3})\/(\d{2,3})", text)
     if bp and ("bp" in lower or "blood pressure" in lower):
         value = f"{bp.group(1)}/{bp.group(2)}"
@@ -220,7 +214,6 @@ async def handle_photo(update, context):
 
     photo = update.message.photo[-1]
     file_id = photo.file_id
-
     tg_file = await context.bot.get_file(file_id)
     photo_bytes = await tg_file.download_as_bytearray()
     photo_base64 = base64.b64encode(photo_bytes).decode("utf-8")
@@ -261,17 +254,7 @@ async def handle_photo(update, context):
         return
 
     captured = parse_time_from_message(caption)
-
-    ok, msg = send_to_health_log(
-        build_wound(
-            caption,
-            captured,
-            "",
-            file_id,
-            photo_base64,
-        )
-    )
-
+    ok, msg = send_to_health_log(build_wound(caption, captured, "", file_id, photo_base64))
     await update.message.reply_text("✅ Logged Wound Photo Entry" if ok else msg)
 
 

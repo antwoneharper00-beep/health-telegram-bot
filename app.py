@@ -15,7 +15,7 @@ from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, fil
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN")
-PUBLIC_URL = os.environ.get("PUBLIC_URL")
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://health-telegram-bot-kqqk.onrender.com")
 
 LOCAL_TZ = ZoneInfo("America/New_York")
 TELEGRAM_WEBHOOK_PATH = "/telegram"

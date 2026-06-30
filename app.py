@@ -12,6 +12,10 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters
 
 
+# =========================================================
+# ENVIRONMENT SETTINGS
+# =========================================================
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN")
@@ -21,27 +25,40 @@ LOCAL_TZ = ZoneInfo("America/New_York")
 TELEGRAM_WEBHOOK_PATH = "/telegram"
 TELEGRAM_WEBHOOK_URL = PUBLIC_URL + TELEGRAM_WEBHOOK_PATH
 
+if not BOT_TOKEN:
+    raise RuntimeError("Missing BOT_TOKEN environment variable")
+if not WEBHOOK_URL:
+    raise RuntimeError("Missing WEBHOOK_URL environment variable")
+if not WEBHOOK_TOKEN:
+    raise RuntimeError("Missing WEBHOOK_TOKEN environment variable")
+
 telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
 bot_loop = asyncio.new_event_loop()
 flask_app = Flask(__name__)
 
 
+# =========================================================
+# HELPERS
+# =========================================================
+
 def parse_time_from_message(text):
-    lower = text.lower()
+    lower = (text or "").lower()
     now = datetime.now(LOCAL_TZ)
 
-    m = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})", lower)
-    if m:
-        month, day, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    date_match = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})", lower)
+    if date_match:
+        month = int(date_match.group(1))
+        day = int(date_match.group(2))
+        year = int(date_match.group(3))
         if year < 100:
             year += 2000
         now = now.replace(year=year, month=month, day=day)
 
-    t = re.search(r"(?:@|at)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)", lower)
-    if t:
-        hour = int(t.group(1))
-        minute = int(t.group(2) or 0)
-        ampm = t.group(3)
+    time_match = re.search(r"(?:@|at)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)", lower)
+    if time_match:
+        hour = int(time_match.group(1))
+        minute = int(time_match.group(2) or 0)
+        ampm = time_match.group(3)
         if ampm == "pm" and hour != 12:
             hour += 12
         if ampm == "am" and hour == 12:
@@ -53,13 +70,29 @@ def parse_time_from_message(text):
 
 def send_to_health_log(payload):
     try:
-        r = requests.post(WEBHOOK_URL, json=payload, allow_redirects=True, timeout=90)
-        body = r.text.strip()
-        print(r.status_code, body, flush=True)
-        return r.status_code in [200, 302] and body.startswith("OK"), body
-    except Exception as e:
-        print(str(e), flush=True)
-        return False, str(e)
+        response = requests.post(
+            WEBHOOK_URL,
+            json=payload,
+            allow_redirects=True,
+            timeout=90,
+        )
+        body = response.text.strip()
+        print("APPS SCRIPT RESPONSE:", response.status_code, body, flush=True)
+        ok = response.status_code in [200, 302] and body.startswith("OK")
+        return ok, body
+    except Exception as error:
+        print("SEND ERROR:", str(error), flush=True)
+        return False, str(error)
+
+
+def clean_apps_script_response(msg):
+    if not msg:
+        return "No response from workbook."
+    cleaned = msg.strip()
+    if cleaned.startswith("OK_"):
+        cleaned = cleaned[3:]
+    cleaned = cleaned.replace("_", " ")
+    return cleaned
 
 
 def build_vital(name, value, unit, notes, captured):
@@ -79,7 +112,7 @@ def build_vital(name, value, unit, notes, captured):
 
 
 def build_wound(notes, captured, photo_url="", photo_file_id="", photo_base64=""):
-    lower = notes.lower()
+    lower = (notes or "").lower()
     return {
         "token": WEBHOOK_TOKEN,
         "type": "Wound",
@@ -104,6 +137,19 @@ def build_wound(notes, captured, photo_url="", photo_file_id="", photo_base64=""
     }
 
 
+def build_reimbursement_action(action, payload=None):
+    return {
+        "token": WEBHOOK_TOKEN,
+        "type": "ReimbursementAction",
+        "action": action,
+        "payload": payload or {},
+    }
+
+
+# =========================================================
+# COMMAND HANDLERS
+# =========================================================
+
 async def start(update, context):
     await update.message.reply_text("Health bot is online ✅")
 
@@ -111,10 +157,13 @@ async def start(update, context):
 async def reimburse(update, context):
     await update.message.reply_text(
         "Reimbursement commands:\n\n"
-        "claim TR-0006\n"
+        "Create mileage claim:\n"
+        "Claim TR-0006\n"
+        "or\n"
         "/newclaim TR-0006\n\n"
-        "Receipt photo caption:\n"
-        "/receipt TR-0006 gas 42.18 Sheetz"
+        "Upload receipt photo with caption:\n"
+        "/receipt TR-0006 gas 42.18 Sheetz\n\n"
+        "Categories: gas, hotel, parking, tolls, airfare, other"
     )
 
 
@@ -124,16 +173,13 @@ async def newclaim(update, context):
         return
 
     trip_id = context.args[0].upper()
-
-    payload = {
-        "token": WEBHOOK_TOKEN,
-        "type": "ReimbursementAction",
-        "action": "create_claim",
-        "payload": {"tripId": trip_id},
-    }
-
+    payload = build_reimbursement_action("create_claim", {"tripId": trip_id})
     ok, msg = send_to_health_log(payload)
-    await update.message.reply_text(msg if ok else f"Error: {msg}")
+
+    if ok:
+        await update.message.reply_text("✅ " + clean_apps_script_response(msg))
+    else:
+        await update.message.reply_text("Error: " + msg)
 
 
 async def receipt(update, context):
@@ -142,6 +188,10 @@ async def receipt(update, context):
         "/receipt TR-0006 gas 42.18 Sheetz"
     )
 
+
+# =========================================================
+# TEXT MESSAGE HANDLER
+# =========================================================
 
 async def handle_text(update, context):
     text = update.message.text.strip()
@@ -152,16 +202,12 @@ async def handle_text(update, context):
     claim_match = re.match(r"claim\s+(TR-\d+)", text, re.IGNORECASE)
     if claim_match:
         trip_id = claim_match.group(1).upper()
-
-        payload = {
-            "token": WEBHOOK_TOKEN,
-            "type": "ReimbursementAction",
-            "action": "create_claim",
-            "payload": {"tripId": trip_id},
-        }
-
+        payload = build_reimbursement_action("create_claim", {"tripId": trip_id})
         ok, msg = send_to_health_log(payload)
-        await update.message.reply_text(msg if ok else f"Error: {msg}")
+        if ok:
+            await update.message.reply_text("✅ " + clean_apps_script_response(msg))
+        else:
+            await update.message.reply_text("Error: " + msg)
         return
 
     bp = re.search(r"(\d{2,3})\/(\d{2,3})", text)
@@ -172,25 +218,25 @@ async def handle_text(update, context):
         return
 
     if "sugar" in lower or "blood sugar" in lower:
-        m = re.search(r"(\d+)", lower)
-        if m:
-            value = m.group(1)
+        sugar = re.search(r"(\d+)", lower)
+        if sugar:
+            value = sugar.group(1)
             ok, msg = send_to_health_log(build_vital("Blood Sugar", value, "mg/dL", notes, captured))
             await update.message.reply_text(f"✅ Logged Sugar {value}" if ok else msg)
             return
 
     if "urine" in lower:
-        m = re.search(r"(\d+)\s*(ml|mL)", text)
-        if m:
-            value = m.group(1)
+        urine = re.search(r"(\d+)\s*(ml|mL)", text)
+        if urine:
+            value = urine.group(1)
             ok, msg = send_to_health_log(build_vital("Urine Output", value, "mL", notes, captured))
             await update.message.reply_text(f"✅ Logged Urine {value}mL" if ok else msg)
             return
 
     if "weight" in lower:
-        m = re.search(r"(\d{2,3}(?:\.\d+)?)", lower)
-        if m:
-            value = m.group(1)
+        weight = re.search(r"(\d{2,3}(?:\.\d+)?)", lower)
+        if weight:
+            value = weight.group(1)
             ok, msg = send_to_health_log(build_vital("Weight", value, "lbs", notes, captured))
             await update.message.reply_text(f"✅ Logged Weight {value}" if ok else msg)
             return
@@ -208,6 +254,10 @@ async def handle_text(update, context):
     await update.message.reply_text("I couldn't understand that entry.")
 
 
+# =========================================================
+# PHOTO HANDLER
+# =========================================================
+
 async def handle_photo(update, context):
     caption = update.message.caption or ""
     lower = caption.lower()
@@ -220,21 +270,18 @@ async def handle_photo(update, context):
 
     if lower.startswith("/receipt"):
         parts = caption.split()
-
         if len(parts) < 4:
             await update.message.reply_text("Use caption: /receipt TR-0006 gas 42.18 Sheetz")
             return
 
         trip_id = parts[1].upper()
         category = parts[2]
-        amount = parts[3]
+        amount = parts[3].replace("$", "")
         vendor = " ".join(parts[4:]) if len(parts) > 4 else ""
 
-        payload = {
-            "token": WEBHOOK_TOKEN,
-            "type": "ReimbursementAction",
-            "action": "log_receipt",
-            "payload": {
+        payload = build_reimbursement_action(
+            "log_receipt",
+            {
                 "tripId": trip_id,
                 "category": category,
                 "amount": amount,
@@ -243,10 +290,13 @@ async def handle_photo(update, context):
                 "fileName": f"{trip_id}_{category}_{datetime.now(LOCAL_TZ).strftime('%Y%m%d_%H%M%S')}.jpg",
                 "photoBase64": photo_base64,
             },
-        }
+        )
 
         ok, msg = send_to_health_log(payload)
-        await update.message.reply_text(msg if ok else f"Error: {msg}")
+        if ok:
+            await update.message.reply_text("✅ " + clean_apps_script_response(msg))
+        else:
+            await update.message.reply_text("Error: " + msg)
         return
 
     if not caption or not lower.startswith("wound"):
@@ -258,6 +308,10 @@ async def handle_photo(update, context):
     await update.message.reply_text("✅ Logged Wound Photo Entry" if ok else msg)
 
 
+# =========================================================
+# REGISTER TELEGRAM HANDLERS
+# =========================================================
+
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(CommandHandler("reimburse", reimburse))
 telegram_app.add_handler(CommandHandler("newclaim", newclaim))
@@ -265,6 +319,10 @@ telegram_app.add_handler(CommandHandler("receipt", receipt))
 telegram_app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+
+# =========================================================
+# BOT STARTUP
+# =========================================================
 
 def run_bot():
     asyncio.set_event_loop(bot_loop)
@@ -284,6 +342,10 @@ def run_bot():
 threading.Thread(target=run_bot, daemon=True).start()
 
 
+# =========================================================
+# FLASK SERVER
+# =========================================================
+
 @flask_app.route("/")
 def home():
     return "Health Bot Running"
@@ -299,13 +361,19 @@ def telegram():
     try:
         data = request.get_json(force=True)
         update = Update.de_json(data, telegram_app.bot)
-        future = asyncio.run_coroutine_threadsafe(telegram_app.process_update(update), bot_loop)
+        future = asyncio.run_coroutine_threadsafe(
+            telegram_app.process_update(update),
+            bot_loop,
+        )
         future.result(timeout=60)
         return "OK", 200
-    except Exception as e:
-        print(str(e), flush=True)
+    except Exception as error:
+        print(str(error), flush=True)
         return "ERROR", 500
 
 
 if __name__ == "__main__":
-    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    flask_app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+    )

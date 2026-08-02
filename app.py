@@ -386,6 +386,16 @@ async def handle_photo(update, context):
         return
 
     captured = parse_time_from_message(caption)
+    print(
+    "WOUND PHOTO DEBUG:",
+    {
+        "file_id": file_id,
+        "photo_bytes": len(photo_bytes),
+        "base64_chars": len(photo_base64),
+        "webhook_url_set": bool(WEBHOOK_URL),
+    },
+    flush=True,
+)
     ok, msg = send_to_health_log(build_wound(caption, captured, "", file_id, photo_base64))
     await update.message.reply_text("✅ Logged Wound Photo Entry" if ok else msg)
 
